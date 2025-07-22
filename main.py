@@ -1,11 +1,12 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image, ImageOps
 import numpy as np
 import cv2
 from io import BytesIO
 
 app = FastAPI()
+
 
 # ---------- Deskew ----------
 def deskew_image_strict(pil_img: Image.Image) -> Image.Image:
@@ -44,37 +45,35 @@ def deskew_image_strict(pil_img: Image.Image) -> Image.Image:
     return Image.fromarray(rotated).convert("RGB")
 
 
-# ---------- Enhance (Optimized for Header Clarity for Mistral OCR) ----------
+# ---------- Mistral OCR Boosted Enhancement ----------
 def enhance_image(image: Image.Image) -> Image.Image:
+    # Convert to grayscale
     gray = ImageOps.grayscale(image)
 
-    # Upscale if image is too small
-    if gray.width < 1200:
-        gray = gray.resize((int(gray.width * 1.5), int(gray.height * 1.5)), Image.BICUBIC)
+    # Resize to simulate high DPI (scanned quality)
+    upscale_factor = 2 if gray.width < 1500 else 1.5
+    new_size = (int(gray.width * upscale_factor), int(gray.height * upscale_factor))
+    gray = gray.resize(new_size, Image.BICUBIC)
 
-    width, height = gray.size
-    header_height = int(height * 0.3)
-    header_box = (0, 0, width, header_height)
-    header = gray.crop(header_box)
+    # Convert to numpy for OpenCV processing
+    img_np = np.array(gray)
 
-    # Enhance header contrast and sharpness
-    header = ImageEnhance.Contrast(header).enhance(2.2)
-    header = ImageEnhance.Sharpness(header).enhance(3.0)
+    # Adaptive Thresholding
+    adaptive = cv2.adaptiveThreshold(
+        img_np, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 25, 15
+    )
 
-    # Binarize the header
-    header_np = np.array(header)
-    _, header_thresh = cv2.threshold(header_np, 180, 255, cv2.THRESH_BINARY)
-    header = Image.fromarray(header_thresh)
+    # Denoising
+    denoised = cv2.fastNlMeansDenoising(adaptive, None, h=30, templateWindowSize=7, searchWindowSize=21)
 
-    # Merge enhanced header back
-    enhanced_gray = gray.copy()
-    enhanced_gray.paste(header, (0, 0))
+    # Morphological Dilation (boosts text stroke)
+    kernel = np.ones((1, 1), np.uint8)
+    morph = cv2.dilate(denoised, kernel, iterations=1)
 
-    # Final enhancement on entire image
-    enhanced_gray = ImageEnhance.Contrast(enhanced_gray).enhance(1.3)
-    enhanced_gray = ImageEnhance.Sharpness(enhanced_gray).enhance(1.2)
-
-    return enhanced_gray.convert("RGB")
+    # Convert back to RGB Pillow Image
+    enhanced = Image.fromarray(morph).convert("RGB")
+    return enhanced
 
 
 # ---------- /align-image ----------
